@@ -436,7 +436,10 @@ class TranslateService:
     
     async def run(self):
         """Main service loop"""
-        # Announce ready immediately so the parent process doesn't block.
+        # Load models synchronously before announcing ready
+        self._discover_and_load_models()
+
+        # Announce ready
         send_status({
             "status": "ready",
             "ts": now_iso(),
@@ -445,12 +448,8 @@ class TranslateService:
             "version": "2.0.0"
         })
 
-        # Load models in background so ready is immediate and long work doesn't block.
-        # Use executor so blocking imports / model loads don't block the event loop.
-        loop = asyncio.get_running_loop()
-        loop.create_task(self._discover_and_load_models_async())
-
         # Now continue normal message loop
+        loop = asyncio.get_running_loop()
         while self._running:
             try:
                 raw = await loop.run_in_executor(None, sys.stdin.buffer.readline)
