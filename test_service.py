@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 # Path to the built executable (adjust if needed)
-EXE_PATH = Path("dist/ct2-translate-service.exe")
+EXE_PATH = Path("dist/ct2_translate_service.exe")
 
 # Test language pairs (should match AVAILABLE_MODELS)
 TEST_PAIRS = [

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 # Configuration
-SCRIPT = "ct2-translate-service.py"
+SCRIPT = "ct2_translate_service.py"
 DIST_DIR = "dist"
 TRANSLATION_MODELS = "translation_models"
 
