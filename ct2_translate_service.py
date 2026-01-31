@@ -70,22 +70,10 @@ def send_result(obj: dict) -> None:
     except Exception:
         pass
 
-# Check dependencies
-CT2_AVAILABLE = False
-SP_AVAILABLE = False
+# Check dependencies - lazy loaded in TranslationModel.load()
+CT2_AVAILABLE = True
+SP_AVAILABLE = True
 ARGOS_AVAILABLE = False
-
-try:
-    import ctranslate2
-    CT2_AVAILABLE = True
-except Exception:
-    pass
-
-try:
-    import sentencepiece as spm
-    SP_AVAILABLE = True
-except Exception:
-    pass
 
 
 # Available language pairs from Argos repository
@@ -125,8 +113,11 @@ class TranslationModel:
         
     def load(self):
         """Load model"""
-        if not CT2_AVAILABLE or not SP_AVAILABLE:
-            raise RuntimeError("CTranslate2 or SentencePiece not available")
+        try:
+            import ctranslate2
+            import sentencepiece as spm
+        except ImportError as e:
+            raise RuntimeError(f"Missing dependencies: {e}")
         
         model_path = self.model_dir / "model"
         if not model_path.exists():
@@ -411,12 +402,10 @@ class TranslateService:
             except Exception:
                 pass
     
-    def _on_signal(self, *_):
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.shutdown())
-        except RuntimeError:
-            pass
+    async def _discover_and_load_models_async(self):
+        """Run the blocking discovery in a threadpool and populate self._models."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor, self._discover_and_load_models)
     
     def _discover_and_load_models(self):
         """Discover and pre-load all models"""
@@ -430,18 +419,24 @@ class TranslateService:
             
             lang_pair = model_dir.name
             
+            # Skip hidden or temporary directories
+            if lang_pair.startswith('.'):
+                continue
+            
             try:
+                send_status({"status": "loading_model", "lang_pair": lang_pair})
                 model = TranslationModel(model_dir, lang_pair)
                 model.load()
                 self._models[lang_pair] = model
                 logger.warning("Model ready: %s", lang_pair)
+                send_status({"status": "model_loaded", "lang_pair": lang_pair})
             except Exception as e:
                 logger.error("Failed to load %s: %s", lang_pair, e)
+                send_status({"status": "model_load_failed", "lang_pair": lang_pair, "error": str(e)})
     
     async def run(self):
         """Main service loop"""
-        self._discover_and_load_models()
-        
+        # Announce ready immediately so the parent process doesn't block.
         send_status({
             "status": "ready",
             "ts": now_iso(),
@@ -449,8 +444,13 @@ class TranslateService:
             "models_dir": str(self._models_dir),
             "version": "2.0.0"
         })
-        
+
+        # Load models in background so ready is immediate and long work doesn't block.
+        # Use executor so blocking imports / model loads don't block the event loop.
         loop = asyncio.get_running_loop()
+        loop.create_task(self._discover_and_load_models_async())
+
+        # Now continue normal message loop
         while self._running:
             try:
                 raw = await loop.run_in_executor(None, sys.stdin.buffer.readline)

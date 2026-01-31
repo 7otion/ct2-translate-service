@@ -6,13 +6,17 @@ from pathlib import Path
 # Configuration
 SCRIPT = "ct2_translate_service.py"
 DIST_DIR = "dist"
-TRANSLATION_MODELS = "translation_models"
+#TRANSLATION_MODELS = "translation_models"
 
 PYINSTALLER_ARGS = [
-    "--onefile",
-    f"--add-data={TRANSLATION_MODELS};{TRANSLATION_MODELS}",
+    "--onedir",
+    #f"--add-data={TRANSLATION_MODELS};{TRANSLATION_MODELS}",
     "--collect-all", "ctranslate2",
     "--collect-all", "sentencepiece",
+    "--exclude-module", "tkinter",
+    "--exclude-module", "matplotlib",
+    "--exclude-module", "PIL",
+    "--exclude-module", "cv2",
     SCRIPT
 ]
 
