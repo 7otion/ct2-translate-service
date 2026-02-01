@@ -420,14 +420,19 @@ def normalize_ocr_text(text: str, source_lang: str) -> str:
     # Normalize Unicode (NFC normalization)
     text = unicodedata.normalize('NFC', text)
     
-    # Handle ALL CAPS text - convert to title case for better tokenization
+    # Handle ALL CAPS text - convert appropriately for translation
     # Models are typically trained on natural case text, not ALL CAPS
     words = text.split()
     normalized_words = []
     for word in words:
-        # If word is all uppercase and longer than 1 char, convert to title case
+        # If word is all uppercase and longer than 1 char
         if word.isupper() and len(word) > 1:
-            normalized_words.append(word.capitalize())
+            # For single-word input: lowercase to avoid proper noun interpretation
+            # For multi-word: title case for natural sentence structure
+            if len(words) == 1:
+                normalized_words.append(word.lower())
+            else:
+                normalized_words.append(word.capitalize())
         else:
             normalized_words.append(word)
     text = ' '.join(normalized_words)
