@@ -145,12 +145,40 @@ class TranslationModel:
         
         source_tokens = self.sp_processor.encode(text, out_type=str)
         
+        # Adjust parameters based on input length
+        # Short inputs need stronger repetition control and strict length limits
+        num_tokens = len(source_tokens)
+        if num_tokens <= 3:
+            # Very short: 1-2 words
+            rep_penalty = 2.0  # Very strong
+            no_repeat = 1      # No single token repetition
+            max_len = num_tokens + 3  # Strict: at most 3 extra tokens
+            beam = 1  # Fast, greedy decoding
+        elif num_tokens <= 8:
+            # Short: 3-5 words  
+            rep_penalty = 1.6
+            no_repeat = 2
+            max_len = num_tokens * 2 + 5
+            beam = 2
+        elif num_tokens <= 20:
+            # Medium length
+            rep_penalty = 1.3
+            no_repeat = 2
+            max_len = num_tokens * 2 + 10
+            beam = 2
+        else:
+            # Long text
+            rep_penalty = 1.2
+            no_repeat = 3
+            max_len = min(256, num_tokens * 2 + 20)
+            beam = 2
+        
         results = self.translator.translate_batch(
             [source_tokens],
-            beam_size=1,
-            repetition_penalty=1.2,
-            no_repeat_ngram_size=2,
-            max_decoding_length=256,
+            beam_size=beam,
+            repetition_penalty=rep_penalty,
+            no_repeat_ngram_size=no_repeat,
+            max_decoding_length=max_len,
             min_decoding_length=1,
             return_scores=False
         )
@@ -385,6 +413,89 @@ class ModelDownloader:
             return True
         return False
 
+def normalize_ocr_text(text: str, source_lang: str) -> str:
+    """Normalize common OCR errors before translation"""
+    import unicodedata
+    
+    # Normalize Unicode (NFC normalization)
+    text = unicodedata.normalize('NFC', text)
+    
+    # Handle ALL CAPS text - convert to title case for better tokenization
+    # Models are typically trained on natural case text, not ALL CAPS
+    words = text.split()
+    normalized_words = []
+    for word in words:
+        # If word is all uppercase and longer than 1 char, convert to title case
+        if word.isupper() and len(word) > 1:
+            normalized_words.append(word.capitalize())
+        else:
+            normalized_words.append(word)
+    text = ' '.join(normalized_words)
+    
+    # Language-specific fixes for common OCR confusions
+    if source_lang == "tr":
+        # Turkish has both dotted İ/i and dotless I/ı - be careful!
+        pass  # Turkish text should keep ı as-is
+    elif source_lang == "en":
+        # English doesn't use dotless ı - replace with i
+        text = text.replace('ı', 'i')
+        text = text.replace('İ', 'I')  # Turkish capital İ → English I
+    
+    # General cleaning
+    text = ' '.join(text.split())  # Normalize whitespace
+    
+    return text
+
+
+def postprocess_translation(text: str, source_text: str) -> str:
+    """Post-process translation to fix common issues"""
+    if not text:
+        return text
+    
+    words = text.split()
+    source_words = source_text.split()
+    
+    # Detect semantic repetition (similar words, not just exact duplicates)
+    # Common in Turkish: "videoları videolar", "İsim adı" where both are same root
+    if len(words) >= 2:
+        deduped = [words[0]]
+        for i in range(1, len(words)):
+            current_lower = words[i].lower()
+            prev_lower = words[i-1].lower()
+            
+            # Check exact repetition
+            if current_lower == prev_lower:
+                continue
+            
+            # Check if words share significant prefix (likely same root word)
+            # e.g., "videoları" and "videolar" share "video"
+            min_len = min(len(current_lower), len(prev_lower))
+            if min_len >= 4:
+                # If first 4+ chars match, likely same root
+                prefix_match = sum(1 for a, b in zip(current_lower, prev_lower) if a == b)
+                if prefix_match >= min(min_len, 4) and prefix_match / min_len > 0.7:
+                    # Words share 70%+ similarity - likely semantic duplicate
+                    continue
+            
+            deduped.append(words[i])
+        
+        if len(deduped) < len(words) and deduped:
+            text = ' '.join(deduped)
+            words = deduped
+    
+    # Length-based validation: translation shouldn't be much longer than source
+    # For 1 word input, expect 1-2 words output max
+    # For 2 word input, expect 2-4 words output max
+    if len(source_words) <= 2:
+        expected_max = len(source_words) * 2
+        if len(words) > expected_max:
+            # Trim to reasonable length - keep first N words
+            words = words[:expected_max]
+            text = ' '.join(words)
+    
+    return text.strip()
+
+
 class TranslateService:
     """Translation service with model management"""
     
@@ -497,6 +608,7 @@ class TranslateService:
         text = msg.get("text", "")
         source = msg.get("source", "en")
         target = msg.get("target")
+        normalize = msg.get("normalize_ocr", True)  # Optional flag to disable normalization
         
         if not target:
             send_result({"id": req_id, "error": "target language required"})
@@ -506,6 +618,11 @@ class TranslateService:
             send_result({"id": req_id, "translated": "", "latency_ms": 0})
             return
         
+        # Normalize common OCR errors if enabled
+        if normalize:
+            text = normalize_ocr_text(text, source)
+        
+        original_text = text  # Keep for post-processing comparison
         request_ts = time.time()
         
         async with self._lock:
@@ -518,6 +635,9 @@ class TranslateService:
                 
                 loop = asyncio.get_running_loop()
                 translated = await loop.run_in_executor(self._executor, model.translate, text)
+                
+                # Post-process to fix repetitions and other issues
+                translated = postprocess_translation(translated, original_text)
                 
                 latency_ms = int((time.time() - request_ts) * 1000)
                 send_result({"id": req_id, "translated": translated, "latency_ms": latency_ms})
