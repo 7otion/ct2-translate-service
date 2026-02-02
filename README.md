@@ -1,6 +1,6 @@
 # CTranslate2 Translation Service
 
-A simple translation service using CTranslate2 for fast neural machine translation.
+A minimal Python wrapper service for CTranslate2 for fast neural machine translation.
 
 ## Features
 
